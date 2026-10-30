@@ -67,11 +67,16 @@ func (r *Runtime) Metrics(ctx context.Context) (*RuntimeMetrics, error) {
 func (b *Box) Metrics(ctx context.Context) (*BoxMetrics, error) {
 	b.runtime.ensureDrainRunning()
 
+	unpin, err := b.pin()
+	if err != nil {
+		return nil, err
+	}
 	ch := make(chan boxMetricsResult, 1)
 	h := registerHandleForDispatch(cgo.NewHandle(ch))
 
 	var cerr C.CBoxliteError
 	code := C.boxlite_box_metrics(b.handle, C.cbBoxMetrics(), handleToPtr(h), &cerr)
+	unpin()
 	if code != C.Ok {
 		deleteHandleForDispatch(h)
 		return nil, freeError(&cerr)

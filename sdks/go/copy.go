@@ -31,11 +31,16 @@ func (b *Box) CopyInto(ctx context.Context, hostSrc, guestDst string) error {
 	cDst := toCString(guestDst)
 	defer C.free(unsafe.Pointer(cDst))
 
+	unpin, err := b.pin()
+	if err != nil {
+		return err
+	}
 	ch := make(chan error, 1)
 	h := registerHandleForDispatch(cgo.NewHandle(ch))
 
 	var cerr C.CBoxliteError
 	code := C.boxlite_copy_into(b.handle, cSrc, cDst, C.cbCopy(), handleToPtr(h), &cerr)
+	unpin()
 	if code != C.Ok {
 		deleteHandleForDispatch(h)
 		return freeError(&cerr)
@@ -69,11 +74,16 @@ func (b *Box) CopyOut(ctx context.Context, guestSrc, hostDst string) error {
 	cDst := toCString(hostDst)
 	defer C.free(unsafe.Pointer(cDst))
 
+	unpin, err := b.pin()
+	if err != nil {
+		return err
+	}
 	ch := make(chan error, 1)
 	h := registerHandleForDispatch(cgo.NewHandle(ch))
 
 	var cerr C.CBoxliteError
 	code := C.boxlite_copy_out(b.handle, cSrc, cDst, C.cbCopy(), handleToPtr(h), &cerr)
+	unpin()
 	if code != C.Ok {
 		deleteHandleForDispatch(h)
 		return freeError(&cerr)
@@ -154,9 +164,14 @@ func (b *Box) CopyOutStream(ctx context.Context, guestSrc string, w io.Writer, o
 	cSrc := toCString(guestSrc)
 	defer C.free(unsafe.Pointer(cSrc))
 
+	unpin, err := b.pin()
+	if err != nil {
+		return err
+	}
 	var sourceKind C.int32_t
 	var cerr C.CBoxliteError
 	stream := C.boxlite_copy_out_start(b.handle, cSrc, &sourceKind, &cerr)
+	unpin()
 	if stream == nil {
 		return freeError(&cerr)
 	}
@@ -241,6 +256,10 @@ func (b *Box) CopyInStream(ctx context.Context, guestDst string, sourceKind Copy
 	cDst := toCString(guestDst)
 	defer C.free(unsafe.Pointer(cDst))
 
+	unpin, err := b.pin()
+	if err != nil {
+		return err
+	}
 	ch := make(chan error, 1)
 	h := registerHandleForDispatch(cgo.NewHandle(ch))
 
@@ -250,6 +269,7 @@ func (b *Box) CopyInStream(ctx context.Context, guestDst string, sourceKind Copy
 	// cgo needs the explicit conversion.
 	kind := C.int32_t(normalizeCopySourceKind(sourceKind))
 	stream := C.boxlite_copy_in_start(b.handle, cDst, kind, C.cbCopy(), handleToPtr(h), &cerr)
+	unpin()
 	if stream == nil {
 		deleteHandleForDispatch(h)
 		return freeError(&cerr)

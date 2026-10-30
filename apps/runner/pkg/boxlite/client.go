@@ -8,6 +8,7 @@ package boxlite
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -627,9 +628,8 @@ func ToBoxState(state boxlite.State) enums.BoxState {
 //
 // It reads through the runtime rather than the handle cache: a state read
 // needs no bootable handle, only the persisted record. Routing it through
-// getOrFetchBox would evict and re-fetch a handle for every non-running box,
-// and eviction cannot free the old one (see evictBox), so the runner would
-// accumulate dead handles for as long as it ran.
+// getOrFetchBox would fetch and release a handle for every non-running box on
+// every poll.
 func (c *Client) GetBoxInfo(ctx context.Context, boxId string) (models.BoxInfo, error) {
 	info, err := c.runtime.GetInfo(ctx, boxId)
 	if err != nil {
@@ -775,13 +775,17 @@ func (c *Client) getOrFetchBox(ctx context.Context, boxId string) (*boxlite.Box,
 		// Info reads persisted state — it never boots the box, so it is safe to
 		// ask a spent handle.
 		info, err := cached.Info(ctx)
-		if err != nil {
+		switch {
+		case errors.Is(err, boxlite.ErrBoxClosed):
+			// Another lookup found the box down and evicted this handle after
+			// this one read the map. Fetch a fresh one, as that lookup did.
+		case err != nil:
 			return nil, err
-		}
-		// Paused counts as up: the VM is frozen for a snapshot's point-in-time
-		// consistency, not stopped, and its handle still drives a live machine.
-		// The Rust sibling gates on the same pair via BoxStatus::is_active.
-		if info.State == boxlite.StateRunning || info.State == boxlite.StatePaused {
+		case info.State == boxlite.StateRunning || info.State == boxlite.StatePaused:
+			// Paused counts as up: the VM is frozen for a snapshot's
+			// point-in-time consistency, not stopped, and its handle still
+			// drives a live machine. The Rust sibling gates on the same pair
+			// via BoxStatus::is_active.
 			return cached, nil
 		}
 		c.evictBox(boxId, cached)
@@ -820,22 +824,25 @@ func (c *Client) forgetBox(boxId string) {
 // while it is still the cached one — a concurrent Create or fetch may already
 // have replaced it, and unmapping the winner would drop a live entry.
 //
-// It deliberately does not Close the handle. getOrFetchBox hands the same
-// *boxlite.Box to every caller and the runner serializes nothing per box, so
-// freeing here would pull the FFI handle out from under a goroutine mid-call.
-// An unmapped handle is instead leaked for the process lifetime — Close only
-// frees what is still in the map. The cost is one handle per request that finds
-// its box down: calls that go on to boot it stop there, while ones that refuse a
-// stopped box (metrics, a guest-port dial) pay it again on every retry. That is
-// affordable only because it tracks request volume — which is why GetBoxInfo
-// reads through the runtime rather than coming through here.
-// Ref-counting the wrapper is the real fix, and it belongs in the SDK.
+// The handle it unmaps it also closes, so a box that keeps being found down no
+// longer leaves a dead handle behind on every request. Other goroutines may
+// still hold that handle — getOrFetchBox hands the same *boxlite.Box to every
+// caller — and the SDK makes that safe: Close waits for calls already inside
+// the runtime, and any call after it fails with boxlite.ErrBoxClosed. A lookup
+// that meets that error fetches a fresh handle; a caller that took the handle
+// before the eviction gets the error from its next call. Close runs after the
+// lock is released, so that wait never holds up lookups for other boxes.
 func (c *Client) evictBox(boxId string, stale *boxlite.Box) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if current, ok := c.boxes[boxId]; ok && current == stale {
+	current, ok := c.boxes[boxId]
+	unmapped := ok && current == stale
+	if unmapped {
 		delete(c.boxes, boxId)
+	}
+	c.mu.Unlock()
+
+	if unmapped {
+		stale.Close()
 	}
 }
 

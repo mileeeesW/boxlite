@@ -78,6 +78,11 @@ func (b *Box) Export(ctx context.Context, dest string) (string, error) {
 		deleteHandleForDispatch(handle)
 		return "", err
 	}
+	unpin, err := b.pin()
+	if err != nil {
+		deleteHandleForDispatch(handle)
+		return "", err
+	}
 
 	var cError C.CBoxliteError
 	code := C.boxlite_box_export(
@@ -87,6 +92,7 @@ func (b *Box) Export(ctx context.Context, dest string) (string, error) {
 		handleToPtr(handle),
 		&cError,
 	)
+	unpin()
 	if code != C.Ok {
 		deleteHandleForDispatch(handle)
 		return "", freeError(&cError)

@@ -122,11 +122,16 @@ type ResolvedImage struct {
 func (b *Box) Info(ctx context.Context) (*BoxInfo, error) {
 	b.runtime.ensureDrainRunning()
 
+	unpin, err := b.pin()
+	if err != nil {
+		return nil, err
+	}
 	ch := make(chan infoResult, 1)
 	h := registerHandleForDispatch(cgo.NewHandle(ch))
 
 	var cerr C.CBoxliteError
 	code := C.boxlite_box_info(b.handle, C.cbInfo(), handleToPtr(h), &cerr)
+	unpin()
 	if code != C.Ok {
 		deleteHandleForDispatch(h)
 		return nil, freeError(&cerr)

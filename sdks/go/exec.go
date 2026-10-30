@@ -242,9 +242,14 @@ func (b *Box) StartExecution(_ context.Context, name string, args []string, opts
 		tty:          boolToCInt(cfg.TTY),
 	}
 
+	unpin, err := b.pin()
+	if err != nil {
+		return nil, err
+	}
 	var handle *C.CExecutionHandle
 	var cerr C.CBoxliteError
 	code := C.boxlite_box_exec(b.handle, &cCommand, &handle, &cerr)
+	unpin()
 	if code != C.Ok {
 		return nil, freeError(&cerr)
 	}

@@ -117,6 +117,14 @@ for _, image := range cached {
 }
 ```
 
+## Box Handles
+
+A `*Box` is a handle to a box, not the box itself:
+
+- `box.Close()` releases the handle without destroying the box; `rt.Get(ctx, idOrName)` returns a fresh handle to it. Closing a handle twice is a no-op.
+- A `*Box` can be shared between goroutines, including one that closes it while others are mid-call. `Close` waits only for calls that are handing the handle to the native runtime, not for the operations they submitted: a `Start` already in progress still finishes and returns its result.
+- After `Close`, methods that reach the runtime return `boxlite.ErrBoxClosed`; match it with `errors.Is`. `ID` and `Name` keep working.
+
 ## Box Options
 
 - `WithNetwork(boxlite.NetworkSpec{Outbound: boxlite.OutboundNetworkSpec{Mode: boxlite.NetworkModeEnabled, AllowNet: []string{"api.openai.com"}}})` restricts outbound traffic while keeping networking enabled.

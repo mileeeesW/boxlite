@@ -112,13 +112,18 @@ type BoxTunnel struct {
 
 // Network returns the box-scoped handle for network operations.
 func (b *Box) Network() (*Network, error) {
-	if b == nil || b.handle == nil {
+	if b == nil {
 		return nil, ErrRuntimeClosed
+	}
+	unpin, err := b.pin()
+	if err != nil {
+		return nil, err
 	}
 
 	var cNetwork *C.CBoxNetworkHandle
 	var cerr C.CBoxliteError
 	code := C.boxlite_box_network(b.handle, &cNetwork, &cerr)
+	unpin()
 	if code != C.Ok {
 		return nil, freeError(&cerr)
 	}

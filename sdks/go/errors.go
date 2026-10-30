@@ -84,3 +84,11 @@ var ErrRuntimeClosed = &Error{
 	Code:    ErrInvalidState,
 	Message: "runtime closed",
 }
+
+// ErrBoxClosed is returned by a call on a Box whose Close has run. The call is
+// refused before it reaches the runtime, since the native handle is gone; the
+// box itself is untouched, and Runtime.Get returns a fresh handle to it.
+var ErrBoxClosed = &Error{
+	Code:    ErrInvalidState,
+	Message: "box handle closed",
+}
