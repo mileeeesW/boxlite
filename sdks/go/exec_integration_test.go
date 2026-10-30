@@ -13,7 +13,7 @@ import (
 
 // createStartedBoxOrSkip mirrors createStartedBox but skips (rather than
 // fails) when the failure mode is an infrastructure prerequisite — image
-// pull (ErrStorage / ErrImage) or network reach (ErrNetwork). Used by
+// pull (ErrStorage / ErrImazge) or network reach (ErrNetwork). Used by
 // integration tests that the pre-push hook may run in network-restricted
 // environments where docker.io is unreachable.
 func createStartedBoxOrSkip(t *testing.T, rt *Runtime, image string, opts ...BoxOption) *Box {

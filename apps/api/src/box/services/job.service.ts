@@ -264,6 +264,7 @@ export class JobService {
     // Handle job completion for v2 runners - update box, artifact, or backup state.
     if (status === JobStatus.COMPLETED || status === JobStatus.FAILED) {
       // Fire and forget - don't block the response
+      // failpoint
       this.jobStateHandlerService.handleJobCompletion(updatedJob).catch((error) => {
         this.logger.error(`Error handling job completion for job ${jobId}:`, error)
       })

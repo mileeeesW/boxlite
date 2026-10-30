@@ -112,7 +112,11 @@ SPEC_REDIS = ServiceSpec(
 
 SPEC_MINIO = ServiceSpec(
     name="minio",
-    image="minio/minio:latest",
+    # LOCAL EXPERIMENT 2026-10-22: minio/minio is gone from Docker Hub (anonymous
+    # pull returns UNAUTHORIZED, hub API says object not found); bitnamilegacy
+    # still serves a multi-arch build. Its own entrypoint reads MINIO_ROOT_*
+    # and serves API :9000 / console :9001 from /bitnami/minio/data.
+    image="127.0.0.1:25001/minio:latest",  # pushed from bitnamilegacy/minio via Docker Desktop
     cpus=1,
     memory_mib=512,
     ports=[(29000, 9000), (29001, 9001)],
@@ -120,8 +124,7 @@ SPEC_MINIO = ServiceSpec(
         "MINIO_ROOT_USER": cfg.minio_user,
         "MINIO_ROOT_PASSWORD": cfg.minio_password,
     },
-    cmd=["server", "/data", "--console-address", ":9001"],
-    volumes=lambda cfg: [(str(cfg.data_dir / "minio"), "/data")],
+    volumes=lambda cfg: [(str(cfg.data_dir / "minio"), "/bitnami/minio/data")],
     depends_on=[],
     healthcheck=HealthCheck(
         http_url="http://127.0.0.1:29000/minio/health/live",
@@ -146,7 +149,7 @@ echo "init: ok - boxlite bucket ready"
 
 SPEC_MINIO_INIT = ServiceSpec(
     name="minio-init",
-    image="minio/mc:latest",
+    image="127.0.0.1:25001/minio-client:latest",  # LOCAL EXPERIMENT 2026-10-22, see SPEC_MINIO
     cpus=1,
     memory_mib=128,
     ports=[],
@@ -173,7 +176,7 @@ SPEC_REGISTRY = ServiceSpec(
     volumes=lambda cfg: [(str(cfg.data_dir / "registry"), "/var/lib/registry")],
     depends_on=[],
     healthcheck=HealthCheck(
-        http_url="http://127.0.0.1:25000/v2/",
+        http_url="http://127.0.0.1:25001/v2/",
         interval_s=2.0,
         retries=30,
     ),
