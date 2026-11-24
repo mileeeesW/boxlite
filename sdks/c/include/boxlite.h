@@ -123,6 +123,9 @@ typedef struct CAgentEvents CAgentEvents;
 // Agent turn handle.
 typedef struct CAgentTurn CAgentTurn;
 
+// One observation of a turn, owned by the caller.
+typedef struct CAgentWait CAgentWait;
+
 // Box-owned namespace; release with boxlite_agents_free.
 typedef struct CAgents CAgents;
 
@@ -997,6 +1000,21 @@ enum BoxliteErrorCode boxlite_agent_turn_wait(struct CAgentTurn *turn_arg,
                                               void *user_data_arg,
                                               CBoxliteError *out_error);
 
+// Start a wait and return its independently releasable handle. On synchronous
+// refusal, out_wait is cleared and the callback is never queued. On acceptance,
+// keep user_data valid through the single completion dispatched by runtime_drain.
+enum BoxliteErrorCode boxlite_agent_turn_wait_cancellable(struct CAgentTurn *turn_arg,
+                                                          const struct CAgentWaitOptions *options_arg,
+                                                          CAgentJsonCb callback_arg,
+                                                          void *user_data_arg,
+                                                          struct CAgentWait **out_wait,
+                                                          CBoxliteError *out_error);
+
+// Release once, including after normal completion. NULL is accepted.
+// Release never blocks. If cancellation wins, the callback reports Stopped.
+// The turn and other waiters continue.
+void boxlite_agent_wait_free(struct CAgentWait *wait);
+
 // Steer this turn without submitting another turn.
 // out_error may be null or writable.
 enum BoxliteErrorCode boxlite_agent_turn_steer(struct CAgentTurn *turn_arg,
@@ -1230,6 +1248,25 @@ struct CBoxCopyInStream *boxlite_copy_in_start(CBoxHandle *handle,
                                                CBoxCopyCb copy_cb,
                                                void *user_data,
                                                CBoxliteError *out_error);
+
+// Begin streaming copy-in with explicit overwrite policy. False rejects
+// conflicting entries; earlier new entries can remain after a conflict.
+// The original start function retains overwrite=true for ABI compatibility.
+//
+// # Safety
+//
+// Non-null `handle` and `guest_dst` must reference a live box handle and a
+// NUL-terminated string for this call. A non-null `out_error` must reference
+// writable, exclusively accessible error storage for this call. The callback
+// and any data accessed through `user_data` must stay valid until the runtime
+// dispatches the copy completion event to `copy_cb`. Handle destruction must
+// not race this call.
+struct CBoxCopyInStream *boxlite_copy_in_start_with_overwrite(CBoxHandle *handle,
+                                                              const char *guest_dst,
+                                                              bool overwrite,
+                                                              CBoxCopyCb copy_cb,
+                                                              void *user_data,
+                                                              CBoxliteError *out_error);
 
 // Push a chunk of archive bytes into the guest. Blocks when the guest is
 // slow (bounded-channel backpressure).
@@ -1764,8 +1801,8 @@ void boxlite_options_add_bind_mount(CBoxliteOptions *opts,
 // name — the server resolves either.
 //
 // `managed_volume` is the volume's id or name (`"my-data"`, `"vol_01K2…"`).
-// Managed volumes need a REST runtime; the local runtime has no volume backend
-// and rejects one at create.
+// LocalRuntime resolves managed volumes through `LocalVolumeStore`; REST
+// runtimes resolve them on the server.
 //
 // A NULL `opts`, `managed_volume`, or `guest_path` is ignored, matching
 // [`boxlite_options_add_bind_mount`].

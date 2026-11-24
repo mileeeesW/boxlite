@@ -109,7 +109,8 @@ fn compare_vm_callers(programs: &[(&str, String)]) {
         (first, result, id)
     });
     tokio_rt.block_on(runtime.shutdown(Some(30))).unwrap();
-    let rust_result = boxlite::agents::records::result(&rust_result);
+    let rust_result: serde_json::Value =
+        serde_json::from_str(boxlite::agents::records::result(&rust_result).get()).unwrap();
     for (label, program) in programs {
         let caller_home = boxlite_test_utils::home::PerTestBoxHome::new();
         let mut command = std::process::Command::new(program);

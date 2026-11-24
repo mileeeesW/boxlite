@@ -174,6 +174,26 @@ if err != nil {
 defer restored.Close()
 ```
 
+### Streaming file uploads
+
+`CopyInStream` accepts a raw tar reader and defaults to replacing existing files.
+Pass `WithCopyOverwrite(false)` to add only new entries:
+
+```go
+err := box.CopyInStream(ctx, "/app", tarReader,
+    boxlite.WithCopyOverwrite(false))
+```
+
+Existing directories are reused. A conflicting file, symlink or incompatible
+file/directory entry returns `ErrAlreadyExists` and retains existing contents.
+Entries written before a conflict can remain; there is no archive rollback.
+The existing call without an option retains `overwrite=true`.
+
+Directory metadata is retained only for directories that existed before the
+upload. A directory created by an earlier archive entry still receives its own
+later header's permissions. Go `CopyOut` currently has no overwrite option and
+cannot request protected downloads.
+
 A local runtime treats the archive as trusted because local applications own
 both the runtime and archive. A REST runtime uploads the file and relies on the
 server's untrusted-upload policy.
@@ -468,7 +488,8 @@ non-blocking and does not interrupt work. See [Go event streams](../../docs/refe
 must not be copied after first use; `Runtime.Close` releases all their native handles.
 `Agent.Close` requests the core close operation, which may return `ErrUnsupported`;
 it does not free the local handle. Canceling a context stops the wait without
-canceling submitted work. See [Go ownership and cancellation](../../docs/reference/agents.md#go-json-mapping).
+canceling submitted work. Canceling an `AgentTurn.Wait` also releases its native
+observer while other waits on the same turn continue. See [Go ownership and cancellation](../../docs/reference/agents.md#go-json-mapping).
 
 The Go unit and coverage targets build the C SDK with its `test-support` feature and add
 the `boxlite_agent_test` Go build tag. These tests cross the real C/core boundary

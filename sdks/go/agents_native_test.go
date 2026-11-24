@@ -116,11 +116,60 @@ func TestAgentCallsAndGettersReachCore(t *testing.T) {
 	}
 	defer runtime.KeepAlive(answer)
 	result, err := answer.Wait(ctx, AgentWaitOptions{})
-	if err != nil || result.Text != "yes" || string(result.Data) != `{"approved":false,"child":null,"items":[],"n":0}` {
+	if err != nil || result.Text != "yes" || string(result.Data) != `{"approved":false,"n":0,"items":[],"child":null}` {
 		t.Fatalf("answer=%+v err=%v", result, err)
 	}
 	denied, err := agent.Respond(ctx, "request-1", AgentPermissionResponse{Approved: false}, AgentControlOptions{})
 	checkAgentError(t, denied, err, ErrInvalidArgument)
+}
+
+func TestAgentOpaqueDataSurvivesNativeCalls(t *testing.T) {
+	_, namespace := testAgents(t, false)
+	agent := testCreateAgent(t, namespace)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, data := range []string{
+		`1e400`, `-1e400`, `9007199254740993`, `-9223372036854775808`, `18446744073709551615`,
+		`{"$serde_json::private::Number":"42"}`,
+		`{"$serde_json::private::Number":"hello"}`,
+		`[{"$serde_json::private::Number":"42"},{"$serde_json::private::Number":"hello"}]`,
+		`0.123456789012345678901`, `[0.123456789012345678901,0.123456789012345678902]`,
+	} {
+		for _, operation := range []string{"send", "respond"} {
+			t.Run(operation+"/"+data, func(t *testing.T) {
+				var turn *AgentTurn
+				var err error
+				if operation == "send" {
+					turn, err = agent.Send(ctx, "echo", AgentSendOptions{Data: json.RawMessage(data)})
+				} else {
+					turn, err = agent.Respond(ctx, "request-1", AgentAnswer{Text: "echo", Data: json.RawMessage(data)}, AgentControlOptions{})
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer runtime.KeepAlive(turn)
+				state, err := turn.State()
+				if err != nil || state == nil || state.Result == nil {
+					t.Fatalf("state: %+v, %v", state, err)
+				}
+				if string(state.Result.Data) != data {
+					t.Fatalf("state payload changed: got %s, want %s", state.Result.Data, data)
+				}
+				loaded, err := agent.GetTurn(ctx, state.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer runtime.KeepAlive(loaded)
+				result, err := loaded.Wait(ctx, AgentWaitOptions{})
+				if err != nil || result == nil {
+					t.Fatalf("wait: %+v, %v", result, err)
+				}
+				if string(result.Data) != data {
+					t.Fatalf("payload changed: got %s, want %s", result.Data, data)
+				}
+			})
+		}
+	}
 }
 
 func TestAgentCoreErrorsAreCopied(t *testing.T) {
@@ -523,7 +572,7 @@ func TestAgentRuntimeCloseSerializesWithGetters(t *testing.T) {
 	}
 }
 
-func TestAgentRemoteNamespaceRejectsThroughCore(t *testing.T) {
+func TestAgentRemoteNamespacePropagatesServerNotFound(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/v1/boxes/box1" {
 			http.NotFound(w, r)
@@ -549,7 +598,7 @@ func TestAgentRemoteNamespaceRejectsThroughCore(t *testing.T) {
 		t.Fatal("Agents must be lazy")
 	}
 	agent, err := namespace.Create(ctx, "opencode", AgentCreateOptions{})
-	checkAgentError(t, agent, err, ErrUnsupported)
+	checkAgentError(t, agent, err, ErrNotFound)
 	if strings.Contains(err.Error(), "not implemented") {
 		t.Fatal("stub error reached caller")
 	}
@@ -561,11 +610,90 @@ func TestAgentRemoteNamespaceRejectsThroughCore(t *testing.T) {
 		t.Fatal(err)
 	}
 	agent, err = namespace.Get(ctx, "ses_existing")
-	checkAgentError(t, agent, err, ErrUnsupported)
+	checkAgentError(t, agent, err, ErrNotFound)
 	if namespace.native != native {
 		t.Fatal("namespace did not retain its C handle")
 	}
 	closed := box.Agents()
 	agent, err = closed.Get(ctx, "ses_existing")
 	checkAgentError(t, agent, err, ErrInvalidState)
+}
+
+func TestAgentCancelWaitReleasesOnlyItsObserver(t *testing.T) {
+	_, namespace := testAgents(t, false)
+	agent := testCreateAgent(t, namespace)
+	turn, err := agent.Send(context.Background(), "hold wait observers", AgentSendOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wait := func(ctx context.Context) <-chan error {
+		done := make(chan error, 1)
+		go func() {
+			result, err := turn.Wait(ctx, AgentWaitOptions{})
+			if err == nil && (result == nil || result.Text != "finish") {
+				err = errors.New("unexpected turn result")
+			}
+			done <- err
+		}()
+		return done
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a := wait(ctx)
+	b := wait(context.Background())
+	defer func() {
+		_, _ = agent.Respond(context.Background(), "request-1", AgentAnswer{Text: "finish"}, AgentControlOptions{})
+	}()
+	waitForNativeObservers(t, agent, "2")
+	cancel()
+	if err := receiveAgent(t, a); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	waitForNativeObservers(t, agent, "1")
+	if _, err := agent.Respond(context.Background(), "request-1", AgentAnswer{Text: "finish"}, AgentControlOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := receiveAgent(t, b); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func waitForNativeObservers(t *testing.T, agent *Agent, want string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		state, err := agent.State()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state.Cursor == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("native wait observers = %s, want %s", state.Cursor, want)
+		}
+		runtime.Gosched()
+	}
+}
+
+func TestAgentWaitTimeoutAndRuntimeClose(t *testing.T) {
+	r, namespace := testAgents(t, false)
+	agent := testCreateAgent(t, namespace)
+	turn, err := agent.Send(context.Background(), "hold wait observers", AgentSendOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	zero := time.Duration(0)
+	result, err := turn.Wait(context.Background(), AgentWaitOptions{Timeout: &zero})
+	checkAgentError(t, result, err, ErrInvalidState)
+	done := make(chan error, 1)
+	go func() { _, err := turn.Wait(context.Background(), AgentWaitOptions{}); done <- err }()
+	waitForNativeObservers(t, agent, "1")
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := receiveAgent(t, done); !errors.Is(err, ErrRuntimeClosed) {
+		t.Fatal(err)
+	}
 }
