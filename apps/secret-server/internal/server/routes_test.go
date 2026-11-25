@@ -18,7 +18,7 @@ func TestRoutes(t *testing.T) {
 	for _, role := range []string{"write", "fetch", "all"} {
 		t.Run(role, func(t *testing.T) {
 			pingErr := error(nil)
-			handler := routes(Config{Role: role, AuthMode: "dev", DevToken: "secret"}, func(context.Context) error { return pingErr }, nil)
+			handler := routes(Config{Role: role, AuthMode: "dev", DevToken: "secret"}, func(context.Context) error { return pingErr }, nil, nil)
 			request := func(path, token string) int {
 				r := httptest.NewRequest(http.MethodGet, path, nil)
 				if token != "" {
@@ -62,7 +62,7 @@ func TestRoutes(t *testing.T) {
 }
 
 func TestHealthAndReadinessRejectOtherMethods(t *testing.T) {
-	handler := routes(Config{}, func(context.Context) error { t.Error("unexpected ping"); return nil }, nil)
+	handler := routes(Config{}, func(context.Context) error { t.Error("unexpected ping"); return nil }, nil, nil)
 	for _, path := range []string{"/health", "/ready"} {
 		t.Run(path, func(t *testing.T) {
 			w := httptest.NewRecorder()

@@ -97,7 +97,7 @@ func newServer(ctx context.Context, c Config, deps startupDependencies) (*Server
 		return nil, errors.New("token validator initialization failed")
 	}
 	s := &Server{config: c, db: db}
-	s.http = &http.Server{Addr: net.JoinHostPort("", c.Port), Handler: routes(c, db.Ping, validator.Validate), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
+	s.http = &http.Server{Addr: net.JoinHostPort("", c.Port), Handler: routes(c, db.Ping, validator.Validate, writeRoutes(db, cipher)), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
 	return s, nil
 }
 
@@ -126,15 +126,17 @@ func databaseError(err error) error {
 	}
 }
 
-func routes(c Config, ping func(context.Context) error, validate validateToken) http.Handler {
+func routes(c Config, ping func(context.Context) error, validate validateToken, writeHandler http.Handler) http.Handler {
 	mux := http.NewServeMux()
-	// Endpoint implementations are supplied by their respective follow-up work.
 	// The fetch path is reserved separately so the write middleware never handles it.
 	notFound := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { problem(w, http.StatusNotFound, "not_found") })
 	mux.Handle("/internal/v1/fetch", notFound)
 	mux.Handle("/internal/v1/fetch/", notFound)
 	if c.Role == "write" || c.Role == "all" {
-		mux.Handle("/internal/v1/", writeAuth(c, validate, notFound))
+		if writeHandler == nil {
+			writeHandler = notFound
+		}
+		mux.Handle("/internal/v1/", writeAuth(c, validate, writeHandler))
 	}
 	mux.Handle("/", notFound)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
