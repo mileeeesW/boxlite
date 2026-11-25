@@ -278,6 +278,13 @@ copied JSON. Oversized records are rejected before copying. Count or byte overfl
 cancels the subscription with `ErrResourceExhausted`, preserving its accepted prefix.
 Callbacks never wait for a reader, so a slow stream cannot block other calls.
 
+An invalid event record is consumed once. `Next` returns a nil event and
+an `*AgentEventDecodeError` identifiable with `errors.As`. Missing or mistyped
+fields are named in the error without including the payload. All five outer
+fields are required. Cursor and turn ID accept null, unfamiliar string kinds
+are accepted, and `data` preserves any JSON value, including null. Call
+`Next` again to read the following event, or close the stream.
+
 A native end returns buffered events followed by sticky `io.EOF` or the native
 error. Canceling the subscription context preserves buffered events, followed by
 its context error. The first recorded error wins; completed native EOF is final.
@@ -285,7 +292,8 @@ its context error. The first recorded error wins; completed native EOF is final.
 without waiting. It preserves an earlier error and otherwise produces `io.EOF`.
 Closing a stream does not interrupt agent work.
 
-`Runtime.Close` discards buffers and makes reads return `ErrRuntimeClosed`.
+`Runtime.Close` discards buffers and makes reads return `ErrRuntimeClosed`, including when
+the read context is also canceled at the read decision.
 It cancels connected subscriptions before joining the ordinary drainer, then
 alone drains their terminal callbacks. Pending connects do not hold shutdown
 open; their callback state is released after native runtime destruction.

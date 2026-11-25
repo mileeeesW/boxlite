@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -575,4 +576,83 @@ func TestAgentStreamConcurrentCloseNextAndRuntime(t *testing.T) {
 			t.Fatal("concurrent close double-freed native subscription")
 		}
 	}
+}
+
+func TestAgentStreamDecodeRecovery(t *testing.T) {
+	_, ns := testAgents(t, false)
+	agent := testCreateAgent(t, ns)
+	stream := openTestAgentStream(t, agent, context.Background(), "after-response")
+	if first := nextAgent(t, stream); first.Kind != "first" {
+		t.Fatalf("first event: %+v", first)
+	}
+	testDeliverAgentRecord(stream.state, `{"agent_id":"a","turn_id":null,"kind":7,"cursor":null,"data":"sensitive-payload"}`)
+	event, err := stream.Next(context.Background())
+	var decode *AgentEventDecodeError
+	if event != nil || !errors.As(err, &decode) || !strings.Contains(err.Error(), "kind") || strings.Contains(err.Error(), "sensitive-payload") {
+		t.Fatalf("unexpected decode result: %v %v", event, err)
+	}
+	stream.state.mu.Lock()
+	active := !stream.state.canceled && stream.state.ptr != nil
+	stream.state.mu.Unlock()
+	if !active {
+		t.Fatal("decode error released the native subscription")
+	}
+	if _, err := agent.Respond(context.Background(), "request-1", AgentAnswer{Text: "continue"}, AgentControlOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	got := nextAgent(t, stream)
+	if got.Kind != "future" || string(got.Data) != "1e+400" {
+		t.Fatalf("later event: %+v", got)
+	}
+	receiveAgent(t, stream.state.done)
+	if _, err := stream.Next(context.Background()); !errors.Is(err, io.EOF) {
+		t.Fatal(err)
+	}
+
+}
+
+func TestAgentStreamDecodeRuntimePrecedence(t *testing.T) {
+	r, ns := testAgents(t, false)
+	stream := openTestAgentStream(t, testCreateAgent(t, ns), context.Background(), "pending")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r.Close()
+	if _, err := stream.Next(ctx); !errors.Is(err, ErrRuntimeClosed) {
+		t.Fatalf("both closed: %v", err)
+	}
+}
+
+func TestAgentStreamDecodeClose(t *testing.T) {
+	_, ns := testAgents(t, false)
+	stream := openTestAgentStream(t, testCreateAgent(t, ns), context.Background(), "pending")
+	testDeliverAgentRecord(stream.state, "{}")
+	var decode *AgentEventDecodeError
+	if _, err := stream.Next(context.Background()); !errors.As(err, &decode) {
+		t.Fatal(err)
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatal(err)
+	}
+	receiveAgent(t, stream.state.done)
+	if _, err := stream.Next(context.Background()); !errors.Is(err, io.EOF) {
+		t.Fatal(err)
+	}
+}
+
+func TestAgentStreamDecodePreservesNativeError(t *testing.T) {
+	_, ns := testAgents(t, false)
+	stream := openTestAgentStream(t, testCreateAgent(t, ns), context.Background(), "read-error")
+	receiveAgent(t, stream.state.done)
+	// Corrupt the one buffered record after the real native terminal arrives.
+	s := stream.state
+	s.mu.Lock()
+	s.queue[0] = []byte("{}")
+	s.bytes = len(s.queue[0])
+	s.mu.Unlock()
+	var decode *AgentEventDecodeError
+	if _, err := stream.Next(context.Background()); !errors.As(err, &decode) {
+		t.Fatal(err)
+	}
+	e, err := stream.Next(context.Background())
+	checkAgentError(t, e, err, ErrNetwork)
 }

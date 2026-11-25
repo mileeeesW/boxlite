@@ -137,3 +137,11 @@ func testAgentSubmitCreate(a *Agents) (<-chan handleResult[*agentSession], cgo.H
 	}
 	return op.result, token, nil
 }
+
+// Feed a wire record through the production callback. The typed Rust fixture
+// cannot generate a malformed outer record.
+func testDeliverAgentRecord(s *agentSubscription, record string) {
+	value := C.CString(record)
+	defer C.free(unsafe.Pointer(value))
+	goBoxliteAgentEvent(value, nil, C.uintptr_t(s.token))
+}

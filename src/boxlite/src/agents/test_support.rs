@@ -153,6 +153,18 @@ impl AgentBackend for TestBackend {
             return Ok(Box::pin(futures::stream::iter(items)));
         }
         match options.after.as_deref() {
+            Some("after-response") => {
+                let first = event("first".into());
+                let mut last = event("future".into());
+                last.data = serde_json::from_str("1e+400").unwrap();
+                let mut response = self.wait_gate.subscribe();
+                Ok(Box::pin(futures::stream::iter([Ok(first)]).chain(
+                    futures::stream::once(async move {
+                        response.changed().await.expect("backend owns sender");
+                        Ok(last)
+                    }),
+                )))
+            }
             Some("open-pending") => std::future::pending().await,
             Some("many") => Ok(Box::pin(futures::stream::iter(
                 (0..128)

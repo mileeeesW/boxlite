@@ -252,13 +252,26 @@ func (stream *agentEventStream) Close() error {
 	stream.state.close()
 	return nil
 }
+
+// Shutdown takes precedence when both cancellation signals are observable.
+func (s *agentSubscription) readContextErrorLocked(ctx context.Context) error {
+	if s.runtimeClosed || runtimeAgentClosed(s.owner) {
+		return ErrRuntimeClosed
+	}
+	return ctx.Err()
+}
+
 func (stream *agentEventStream) Next(ctx context.Context) (*AgentEvent, error) {
 	defer runtime.KeepAlive(stream)
-	if err := agentContextError(ctx); err != nil {
-		return nil, err
+	if ctx == nil {
+		return nil, agentJSONError(ErrInvalidArgument, "nil context")
 	}
 	s := stream.state
 	s.mu.Lock()
+	if err := s.readContextErrorLocked(ctx); err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
 	if s.reading {
 		s.mu.Unlock()
 		return nil, agentJSONError(ErrInvalidState, "concurrent event reader")
@@ -268,13 +281,9 @@ func (stream *agentEventStream) Next(ctx context.Context) (*AgentEvent, error) {
 	defer func() { s.mu.Lock(); s.reading = false; s.mu.Unlock() }()
 	for {
 		s.mu.Lock()
-		if err := ctx.Err(); err != nil {
+		if err := s.readContextErrorLocked(ctx); err != nil {
 			s.mu.Unlock()
 			return nil, err
-		}
-		if s.runtimeClosed || runtimeAgentClosed(s.owner) {
-			s.mu.Unlock()
-			return nil, ErrRuntimeClosed
 		}
 		if len(s.queue) > 0 {
 			raw := s.queue[0]
@@ -282,11 +291,7 @@ func (stream *agentEventStream) Next(ctx context.Context) (*AgentEvent, error) {
 			s.queue = s.queue[1:]
 			s.bytes -= len(raw)
 			s.mu.Unlock()
-			event, err := parseAgentEvent(raw)
-			if err != nil {
-				s.cancel(err)
-			}
-			return event, err
+			return parseAgentEvent(raw)
 		}
 		if s.err != nil {
 			err := s.err
