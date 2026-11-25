@@ -622,6 +622,45 @@ func TestAgentStreamDecodeRuntimePrecedence(t *testing.T) {
 	}
 }
 
+// Pause the first Err observation until shutdown and read cancellation overlap.
+type agentReadBarrierContext struct {
+	context.Context
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (c *agentReadBarrierContext) Err() error {
+	c.once.Do(func() {
+		close(c.entered)
+		<-c.Done()
+	})
+	return c.Context.Err()
+}
+
+func TestAgentStreamRuntimeClosesDuringReadErrorCheck(t *testing.T) {
+	r, ns := testAgents(t, false)
+	stream := openTestAgentStream(t, testCreateAgent(t, ns), context.Background(), "pending")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	read := &agentReadBarrierContext{Context: ctx, entered: make(chan struct{})}
+	result := make(chan error, 1)
+	go func() {
+		_, err := stream.Next(read)
+		result <- err
+	}()
+	receiveAgent(t, read.entered)
+	closed := make(chan error, 1)
+	go func() { closed <- r.Close() }()
+	receiveAgent(t, r.closing)
+	cancel()
+	if err := receiveAgent(t, result); !errors.Is(err, ErrRuntimeClosed) {
+		t.Errorf("Next during runtime shutdown returned %v, want ErrRuntimeClosed", err)
+	}
+	if err := receiveAgent(t, closed); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAgentStreamDecodeClose(t *testing.T) {
 	_, ns := testAgents(t, false)
 	stream := openTestAgentStream(t, testCreateAgent(t, ns), context.Background(), "pending")

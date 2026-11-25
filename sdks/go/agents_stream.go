@@ -255,10 +255,11 @@ func (stream *agentEventStream) Close() error {
 
 // Shutdown takes precedence when both cancellation signals are observable.
 func (s *agentSubscription) readContextErrorLocked(ctx context.Context) error {
+	readErr := ctx.Err()
 	if s.runtimeClosed || runtimeAgentClosed(s.owner) {
 		return ErrRuntimeClosed
 	}
-	return ctx.Err()
+	return readErr
 }
 
 func (stream *agentEventStream) Next(ctx context.Context) (*AgentEvent, error) {
